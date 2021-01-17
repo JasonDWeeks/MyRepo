@@ -8,7 +8,6 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
-using Common.Extensions;
 
 namespace Common.QuickMapper
 {
@@ -349,6 +348,13 @@ namespace Common.QuickMapper
                 }
             }
             return false;
+        }
+        public static object GetValue(this Expression expression, params object[] lamdaParameterObjects)
+        {
+            var lExp = expression as LambdaExpression;
+            if (lExp != null)
+                return lExp.Compile().DynamicInvoke(lamdaParameterObjects);
+            return Expression.Lambda(expression).Compile().DynamicInvoke();
         }
         #endregion
 

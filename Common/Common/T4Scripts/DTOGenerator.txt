@@ -1,0 +1,893 @@
+﻿<#@ template debug="false" hostspecific="true" language="C#" #>
+<#@ include file="EF6.Utility.CS.ttinclude"#>
+<#@ include file="T4StdLib.txt"#>
+<#@ assembly name="System.Core" #>
+<#@ assembly name="Microsoft.VisualStudio.TextTemplating.Interfaces.10.0" #>
+<#@ assembly name="Microsoft.CSharp" #>
+<#@ assembly name="EnvDTE" #>
+<#@ assembly name="EnvDTE100" #>
+<#@ import namespace="EnvDTE" #>
+<#@ import namespace="EnvDTE100" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Text" #>
+<#@ import namespace="System.Reflection" #>
+<#@ import namespace="System.IO" #>
+<#@ import namespace="System.Collections.Generic" #><#+
+
+public void GenerateDTO(string entityProject, string entityFile, string typePrefix, bool asViewModel, bool makeSerializable)
+{
+    GenerateDTO(entityProject, entityFile, typePrefix, asViewModel, makeSerializable, false, false);
+}
+
+public void GenerateDTO(string entityProject, string entityFile, string typePrefix, bool asViewModel, bool makeSerializable, bool addTokenToArgDTO)
+{
+    GenerateDTO(entityProject, entityFile, typePrefix, asViewModel, makeSerializable, addTokenToArgDTO, false);
+}
+
+public void GenerateDTO(string entityProject, string entityFile, string typePrefix, bool asViewModel, bool makeSerializable, bool addTokenToArgDTO, bool addOrderAttribute)
+{
+
+    var serviceProvider = (IServiceProvider)Host;
+    var VisualStudio = serviceProvider.GetService(typeof(EnvDTE.DTE)) as DTE;
+    var helper = new DTEVSHelper();
+    var entProject = helper.GetProject(VisualStudio.Solution, entityProject);
+    int endIndex = entProject.FullName.LastIndexOf('\\');
+    string inputFile = entProject.FullName.Substring(0, endIndex + 1) + entityFile;
+
+    var textTransform = DynamicTextTransformation.Create(this);
+    var code = new CodeGenerationTools(this);
+    var ef = new MetadataTools(this);
+    var typeMapper = new TypeMapper(code, ef, textTransform.Errors);
+    var	fileManager = EntityFrameworkTemplateFileManager.Create(this);
+    var itemCollection = new EdmMetadataLoader(textTransform.Host, textTransform.Errors).CreateEdmItemCollection(inputFile);
+    var codeStringGenerator = new CodeStringGenerator(code, typeMapper, ef, this);
+
+
+    var container = itemCollection.OfType<EntityContainer>().FirstOrDefault();
+
+    WriteHeader(codeStringGenerator, fileManager);
+    UsingAndNamespace(codeStringGenerator.UsingDirectives(inHeader: false, includeCollections: false), Namespace(code));
+    BeginBracket();
+
+    BeginRegion(typePrefix + "s", false, true);
+    foreach (var entity in typeMapper.GetItemsToGenerate<EntityType>(itemCollection))
+    {
+        ClassHeaderTemplate(typePrefix, code.Escape(entity), asViewModel, makeSerializable);
+        BeginBracket(true, false);
+        if (asViewModel)
+        {
+            ViewModelCode();
+        }
+        BeginRegion("Members", false, true);
+        var propertiesWithDefaultValues = typeMapper.GetPropertiesWithDefaultValues(entity);
+        var collectionNavigationProperties = typeMapper.GetCollectionNavigationProperties(entity);
+        var complexProperties = typeMapper.GetComplexProperties(entity);
+
+        var simpleProperties = typeMapper.GetSimpleProperties(entity);
+        if (simpleProperties.Any())
+        {
+            foreach (var edmProperty in simpleProperties)
+            {
+                if (asViewModel)
+                    PropertyTemplateViewModel(codeStringGenerator.PropertyType(edmProperty), codeStringGenerator.PropertyName(edmProperty), makeSerializable, addOrderAttribute);
+                else
+                    PropertyTemplate(codeStringGenerator.PropertyType(edmProperty), codeStringGenerator.PropertyName(edmProperty), makeSerializable, addOrderAttribute);
+            }
+        }
+
+        if (complexProperties.Any())
+        {
+            foreach(var complexProperty in complexProperties)
+            {
+                if (asViewModel)
+                    PropertyTemplateViewModel(codeStringGenerator.PropertyType(complexProperty), codeStringGenerator.PropertyName(complexProperty), makeSerializable, addOrderAttribute);
+                else
+                    PropertyTemplate(codeStringGenerator.PropertyType(complexProperty), codeStringGenerator.PropertyName(complexProperty), makeSerializable, addOrderAttribute);
+            }
+        }
+
+        var navigationProperties = typeMapper.GetNavigationProperties(entity);
+        if (navigationProperties.Any())
+        {
+            foreach (var navigationProperty in navigationProperties)
+            {
+                if (asViewModel)
+                    PropertyTemplateViewModel(codeStringGenerator.NavigationPropertyTypeViewModel(navigationProperty, typePrefix), codeStringGenerator.NavigationPropertyTypeName(navigationProperty), makeSerializable, addOrderAttribute);
+                else
+                    PropertyTemplate(codeStringGenerator.NavigationPropertyType(navigationProperty, typePrefix), codeStringGenerator.NavigationPropertyTypeName(navigationProperty), makeSerializable, addOrderAttribute);
+            }
+        }
+        EndRegion("Members");
+        EndBracket(false, true);
+
+    } // END OF Entities For Loop ---------------------------------------------------------------------------------------------------------------------------------------------------
+
+    EndRegion(typePrefix + "s");
+
+    BeginRegion("Stored Procedure " + typePrefix + "s", true, true);
+
+    foreach (var complex in typeMapper.GetItemsToGenerate<ComplexType>(itemCollection))
+    {
+        ClassHeaderTemplate(typePrefix, code.Escape(complex), asViewModel, makeSerializable);
+        BeginBracket(true, false);
+        if (asViewModel)
+        {
+            ViewModelCode();
+        }
+
+        BeginRegion("Members", false, true);
+        var complexProperties = typeMapper.GetComplexProperties(complex);
+        var propertiesWithDefaultValues = typeMapper.GetPropertiesWithDefaultValues(complex);
+
+        var simpleProperties = typeMapper.GetSimpleProperties(complex);
+        if (simpleProperties.Any())
+        {
+            foreach(var edmProperty in simpleProperties)
+            {
+                if (asViewModel)
+                    PropertyTemplateViewModel(codeStringGenerator.PropertyType(edmProperty), codeStringGenerator.PropertyName(edmProperty), makeSerializable, addOrderAttribute);
+                else
+                    PropertyTemplate(codeStringGenerator.PropertyType(edmProperty), codeStringGenerator.PropertyName(edmProperty), makeSerializable, addOrderAttribute);
+            }
+        }
+        EndRegion("Members");
+        EndBracket(false, true);
+
+    } // END OF Complex Type For Loop --------------------------------------------------------------------------------------------------------------------------------------
+
+    EndRegion("Stored Procedure " + typePrefix + "s");
+
+    BeginRegion("Stored Procedure Arguments", true, true);
+
+    foreach (var edmFunction in container.FunctionImports)
+    {
+        var parameters = typeMapper.GetParameters(edmFunction);
+        if (parameters.Any() || addTokenToArgDTO)
+        {
+            ClassHeaderTemplate(typePrefix, edmFunction.Name + "_Args", asViewModel, makeSerializable);
+            BeginBracket(true, false);
+            if (asViewModel)
+            {
+                ViewModelCode();
+            }
+            BeginRegion("Members", false, true);
+
+            foreach(var parameter in parameters)
+            {
+                if (asViewModel)
+                    PropertyTemplateViewModel(TypeMapper.FixNamespaces(parameter.FunctionParameterType), Char.ToUpper(parameter.FunctionParameterName[0]) + parameter.FunctionParameterName.Substring(1), makeSerializable, addOrderAttribute);
+                else
+                    PropertyTemplate(TypeMapper.FixNamespaces(parameter.FunctionParameterType), Char.ToUpper(parameter.FunctionParameterName[0]) + parameter.FunctionParameterName.Substring(1), makeSerializable, addOrderAttribute);
+            }
+
+            if (addTokenToArgDTO)
+            {
+                PropertyTemplate("string", "Token", makeSerializable, addOrderAttribute);
+            }
+            EndRegion("Members");
+            EndBracket(false, true);
+        }
+    } // END OF Function Arguments Type For Loop --------------------------------------------------------------------------------------------------------------------------------------
+    EndRegion("Stored Procedure Arguments");
+
+    EndBracket(false); // END OF Namespace --------------------------------------------------------------------------------------------------------------------------------------
+}
+
+public void WriteHeader(CodeStringGenerator codeStringGenerator, EntityFrameworkTemplateFileManager fileManager)
+{
+    //fileManager.StartHeader();
+#>
+//------------------------------------------------------------------------------
+// <auto-generated>
+// <#=CodeGenerationTools.GetResourceString("Template_GeneratedCodeCommentLine1")#>
+//
+// <#=CodeGenerationTools.GetResourceString("Template_GeneratedCodeCommentLine2")#>
+// <#=CodeGenerationTools.GetResourceString("Template_GeneratedCodeCommentLine3")#>
+// </auto-generated>
+//------------------------------------------------------------------------------
+<#=codeStringGenerator.UsingDirectives(inHeader: true)#>
+<#+
+    //fileManager.EndBlock();
+}
+
+public string Namespace(CodeGenerationTools code)
+{
+    var codeNamespace = code.VsNamespaceSuggestion();
+    if (!String.IsNullOrEmpty(codeNamespace))
+    {
+        return code.EscapeNamespace(codeNamespace);
+    }
+    return string.Empty;
+}
+
+public void UsingAndNamespace(string usingStatments, string namesp)
+{
+
+#>
+<#=usingStatments#>
+namespace <#=namesp#>
+<#+
+
+}
+
+public void BeginBracket(bool startNewLine = false, bool endNewLine = false)
+{
+    if (startNewLine)
+    {
+        WriteLine("");
+    }
+#>
+{
+<#+
+    if (endNewLine)
+    {
+        WriteLine("");
+    }
+    PushIndent("    ");
+}
+
+public void EndBracket(bool startNewLine = false, bool endNewLine = false)
+{
+    PopIndent();
+
+    if (startNewLine)
+    {
+        WriteLine("");
+    }
+#>
+}
+<#+
+    if (endNewLine)
+    {
+        WriteLine("");
+    }
+}
+
+public void BeginRegion(string name, bool startNewLine = false, bool endNewLine = false)
+{
+    if (startNewLine)
+    {
+        WriteLine("");
+    }
+#>
+#region <#=name#>
+<#+
+    if (endNewLine)
+    {
+        WriteLine("");
+    }
+}
+
+public void EndRegion(string name, bool startNewLine = false, bool endNewLine = false)
+{
+    if (startNewLine)
+    {
+        WriteLine("");
+    }
+#>
+#endregion // <#=name#>
+<#+
+    if (endNewLine)
+    {
+        WriteLine("");
+    }
+}
+
+public void ClassHeaderTemplate(string prefix, string name, bool isviewmodel, bool serializable)
+{
+    if (serializable)
+    {
+#>
+[System.Runtime.Serialization.DataContract]
+<#+
+    }
+#>
+public partial class <#=prefix#>_<#=name#><#+ if(isviewmodel){ #> : System.ComponentModel.INotifyPropertyChanged, IDisposable <#+ }
+
+}
+
+
+public void PropertyTemplate(string type, string name, bool serializable, bool orderAttr)
+{
+
+    if (orderAttr)
+    {
+#>
+[Common.Attributes.Order]
+<#+
+    }
+
+    if (serializable)
+    {
+#>
+[System.Runtime.Serialization.DataMember]
+<#+
+    }
+#>
+public <#=type#> <#=name#> { get; set; }
+
+<#+
+
+}
+
+public void ViewModelCode()
+{
+
+#>
+#region View Model Code
+
+public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+partial void OnDispose();
+public void Dispose()
+{
+    OnDispose();
+}
+
+public void OnPropertyChanged([System.Runtime.CompilerServices.CallerMemberName] string propertyName = null)
+{
+    System.ComponentModel.PropertyChangedEventHandler handler = this.PropertyChanged;
+    if (handler != null)
+    {
+        var e = new System.ComponentModel.PropertyChangedEventArgs(propertyName);
+        handler(this, e);
+    }
+}
+
+#endregion // View Model Code
+
+<#+
+
+}
+
+public void PropertyTemplateViewModel(string type, string name, bool serializable, bool orderAttr)
+{
+
+#>
+private <#=type#> _<#=name#>;
+<#+
+    if (orderAttr)
+    {
+#>
+[Common.Attributes.Order]
+<#+
+    }
+
+    if (serializable)
+    {#>
+
+[System.Runtime.Serialization.DataMember]
+<#+
+    }
+#>
+public <#=type#> <#=name#>
+{
+    get
+    {
+        return _<#=name#>;
+    }
+    set
+    {
+        if (_<#=name#> != value)
+        {
+            _<#=name#> = value;
+            OnPropertyChanged();
+        }
+    }
+}
+
+<#+
+
+}
+
+public const string TemplateId = "CSharp_DbContext_Types_EF6";
+
+public class CodeStringGenerator
+{
+    private readonly CodeGenerationTools _code;
+    private readonly TypeMapper _typeMapper;
+    private readonly MetadataTools _ef;
+    private readonly Microsoft.VisualStudio.TextTemplating.TextTransformation _formtext;
+
+    public CodeStringGenerator(CodeGenerationTools code, TypeMapper typeMapper, MetadataTools ef, Microsoft.VisualStudio.TextTemplating.TextTransformation formtext)
+    {
+        ArgumentNotNull(code, "code");
+        ArgumentNotNull(typeMapper, "typeMapper");
+        ArgumentNotNull(ef, "ef");
+
+        _code = code;
+        _typeMapper = typeMapper;
+        _ef = ef;
+        _formtext = formtext;
+    }
+
+    public string Property(EdmProperty edmProperty)
+    {
+        return string.Format(
+        CultureInfo.InvariantCulture,
+        "{0} {1} {2} {{ {3}get; {4}set; }}",
+        Accessibility.ForProperty(edmProperty),
+        _typeMapper.GetTypeName(edmProperty.TypeUsage),
+        _code.Escape(edmProperty),
+        _code.SpaceAfter(Accessibility.ForGetter(edmProperty)),
+        _code.SpaceAfter(Accessibility.ForSetter(edmProperty)));
+    }
+
+    public string PropertyName(EdmProperty edmProperty)
+    {
+        return _code.Escape(edmProperty);
+    }
+
+    public string PropertyType(EdmProperty edmProperty)
+    {
+       return  _typeMapper.GetTypeName(edmProperty.TypeUsage);
+    }
+
+    public string NavigationProperty(NavigationProperty navProp)
+    {
+        var endType = _typeMapper.GetTypeName(navProp.ToEndMember.GetEntityType());
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1} {2} {{ {3}get; {4}set; }}",
+            AccessibilityAndVirtual(Accessibility.ForNavigationProperty(navProp)),
+            navProp.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many ? ("ICollection<" + endType + ">") : endType,
+            _code.Escape(navProp),
+            _code.SpaceAfter(Accessibility.ForGetter(navProp)),
+            _code.SpaceAfter(Accessibility.ForSetter(navProp)));
+    }
+
+    public string NavigationPropertyType(NavigationProperty navProp, string typePrefix)
+    {
+        var endType = _typeMapper.GetTypeName(navProp.ToEndMember.GetEntityType());
+        return navProp.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many? ("System.Collections.Generic.ICollection<" + typePrefix + "_" + endType + ">") : typePrefix + "_" + endType;
+    }
+
+    public string NavigationPropertyTypeViewModel(NavigationProperty navProp, string typePrefix)
+    {
+        var endType = _typeMapper.GetTypeName(navProp.ToEndMember.GetEntityType());
+        return navProp.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many? ("System.Collections.ObjectModel.ObservableCollection<" + typePrefix + "_" + endType + ">") : typePrefix + "_" + endType;
+    }
+    
+    public string NavigationPropertyTypeName(NavigationProperty navProp)
+    {
+        return _code.Escape(navProp);
+    }
+    
+    public string AccessibilityAndVirtual(string accessibility)
+    {
+        return accessibility + (accessibility != "private" ? " virtual" : "");
+    }
+    
+    public string EntityClassOpening(EntityType entity)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1}partial class {2}{3}",
+            Accessibility.ForType(entity),
+            _code.SpaceAfter(_code.AbstractOption(entity)),
+            _code.Escape(entity),
+            _code.StringBefore(" : ", _typeMapper.GetTypeName(entity.BaseType)));
+    }
+
+    public string DTOEntityClassOpening(EntityType entity, string typePrefix)
+    {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} {1}partial class {2}_{3}{4}",
+                Accessibility.ForType(entity),
+                _code.SpaceAfter(_code.AbstractOption(entity)),
+                typePrefix,
+                _code.Escape(entity),
+                _code.StringBefore(" : ", _typeMapper.GetTypeName(entity.BaseType)));
+    }
+    
+    public string EnumOpening(SimpleType enumType)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} enum {1} : {2}",
+            Accessibility.ForType(enumType),
+            _code.Escape(enumType),
+            _code.Escape(_typeMapper.UnderlyingClrType(enumType)));
+        }
+    
+    public void WriteFunctionParameters(EdmFunction edmFunction, Action<string, string, string, string> writeParameter)
+    {
+        var parameters = FunctionImportParameter.Create(edmFunction.Parameters, _code, _ef);
+        foreach (var parameter in parameters.Where(p => p.NeedsLocalVariable))
+        {
+            var isNotNull = parameter.IsNullableOfT ? parameter.FunctionParameterName + ".HasValue" : parameter.FunctionParameterName + " != null";
+            var notNullInit = "new ObjectParameter(\"" + parameter.EsqlParameterName + "\", " + parameter.FunctionParameterName + ")";
+            var nullInit = "new ObjectParameter(\"" + parameter.EsqlParameterName + "\", typeof(" + TypeMapper.FixNamespaces(parameter.RawClrTypeName) + "))";
+            writeParameter(parameter.LocalVariableName, isNotNull, notNullInit, nullInit);
+        }
+    }
+    
+    public string ComposableFunctionMethod(EdmFunction edmFunction, string modelNamespace)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} IQueryable<{1}> {2}({3})",
+            AccessibilityAndVirtual(Accessibility.ForMethod(edmFunction)),
+            _typeMapper.GetTypeName(_typeMapper.GetReturnType(edmFunction), modelNamespace),
+            _code.Escape(edmFunction),
+            string.Join(", ", parameters.Select(p => TypeMapper.FixNamespaces(p.FunctionParameterType) + " " + p.FunctionParameterName).ToArray()));
+    }
+    
+    public string ComposableCreateQuery(EdmFunction edmFunction, string modelNamespace)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "return ((IObjectContextAdapter)this).ObjectContext.CreateQuery<{0}>(\"[{1}].[{2}]({3})\"{4});",
+            _typeMapper.GetTypeName(_typeMapper.GetReturnType(edmFunction), modelNamespace),
+            edmFunction.NamespaceName,
+            edmFunction.Name,
+            string.Join(", ", parameters.Select(p => "@" + p.EsqlParameterName).ToArray()),
+            _code.StringBefore(", ", string.Join(", ", parameters.Select(p => p.ExecuteParameterName).ToArray())));
+    }
+    
+    public string FunctionMethod(EdmFunction edmFunction, string modelNamespace, bool includeMergeOption)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        var returnType = _typeMapper.GetReturnType(edmFunction);
+
+        var paramList = String.Join(", ", parameters.Select(p => TypeMapper.FixNamespaces(p.FunctionParameterType) + " " + p.FunctionParameterName).ToArray());
+        if (includeMergeOption)
+        {
+            paramList = _code.StringAfter(paramList, ", ") + "MergeOption mergeOption";
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1} {2}({3})",
+            AccessibilityAndVirtual(Accessibility.ForMethod(edmFunction)),
+            returnType == null ? "int" : "ObjectResult<" + _typeMapper.GetTypeName(returnType, modelNamespace) + ">",
+            _code.Escape(edmFunction),
+            paramList);
+    }
+
+    public string PropertyFromFunctionParamter(FunctionImportParameter param)
+    {
+        var property = TypeMapper.FixNamespaces(param.FunctionParameterType) + " " + Char.ToUpper(param.FunctionParameterName[0]) + param.FunctionParameterName.Substring(1);
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "public {0} {{ set; get; }}",
+            property);
+    }
+    
+    public string ExecuteFunction(EdmFunction edmFunction, string modelNamespace, bool includeMergeOption)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        var returnType = _typeMapper.GetReturnType(edmFunction);
+
+        var callParams = _code.StringBefore(", ", String.Join(", ", parameters.Select(p => p.ExecuteParameterName).ToArray()));
+        if (includeMergeOption)
+        {
+            callParams = ", mergeOption" + callParams;
+        }
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "return ((IObjectContextAdapter)this).ObjectContext.ExecuteFunction{0}(\"{1}\"{2});",
+            returnType == null ? "" : "<" + _typeMapper.GetTypeName(returnType, modelNamespace) + ">",
+            edmFunction.Name,
+            callParams);
+    }
+    
+    public string DbSet(EntitySet entitySet)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} virtual DbSet<{1}> {2} {{ get; set; }}",
+            Accessibility.ForReadOnlyProperty(entitySet),
+            _typeMapper.GetTypeName(entitySet.ElementType),
+            _code.Escape(entitySet));
+    }
+
+    public string UsingDirectives(bool inHeader, bool includeCollections = true)
+    {
+        return inHeader == string.IsNullOrEmpty(_code.VsNamespaceSuggestion())
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}using System;{1}" +
+                "{2}",
+                inHeader ? Environment.NewLine : "",
+                includeCollections ? (Environment.NewLine + "using System.Collections.Generic;") : "",
+                inHeader ? "" : Environment.NewLine)
+            : "";
+    }
+}
+
+public class TypeMapper
+{
+    private const string ExternalTypeNameAttributeName = @"http://schemas.microsoft.com/ado/2006/04/codegeneration:ExternalTypeName";
+
+    private readonly System.Collections.IList _errors;
+    private readonly CodeGenerationTools _code;
+    private readonly MetadataTools _ef;
+
+    public TypeMapper(CodeGenerationTools code, MetadataTools ef, System.Collections.IList errors)
+    {
+        ArgumentNotNull(code, "code");
+        ArgumentNotNull(ef, "ef");
+        ArgumentNotNull(errors, "errors");
+
+        _code = code;
+        _ef = ef;
+        _errors = errors;
+    }
+
+    public static string FixNamespaces(string typeName)
+    {
+        return typeName.Replace("System.Data.Spatial.", "System.Data.Entity.Spatial.");
+    }
+
+    public string GetTypeName(TypeUsage typeUsage)
+    {
+        return typeUsage == null ? null : GetTypeName(typeUsage.EdmType, _ef.IsNullable(typeUsage), modelNamespace: null);
+    }
+
+    public string GetTypeName(EdmType edmType)
+    {
+        return GetTypeName(edmType, isNullable: null, modelNamespace: null);
+    }
+
+    public string GetTypeName(TypeUsage typeUsage, string modelNamespace)
+    {
+        return typeUsage == null ? null : GetTypeName(typeUsage.EdmType, _ef.IsNullable(typeUsage), modelNamespace);
+    }
+
+    public string GetTypeName(EdmType edmType, string modelNamespace)
+    {
+        return GetTypeName(edmType, isNullable: null, modelNamespace: modelNamespace);
+    }
+
+    public string GetTypeName(EdmType edmType, bool? isNullable, string modelNamespace)
+    {
+        if (edmType == null)
+        {
+            return null;
+        }
+
+        var collectionType = edmType as CollectionType;
+        if (collectionType != null)
+        {
+            return String.Format(CultureInfo.InvariantCulture, "ICollection<{0}>", GetTypeName(collectionType.TypeUsage, modelNamespace));
+        }
+
+        var typeName = _code.Escape(edmType.MetadataProperties
+                                .Where(p => p.Name == ExternalTypeNameAttributeName)
+                                .Select(p => (string)p.Value)
+                                .FirstOrDefault())
+            ?? (modelNamespace != null && edmType.NamespaceName != modelNamespace ?
+                _code.CreateFullName(_code.EscapeNamespace(edmType.NamespaceName), _code.Escape(edmType)) :
+                _code.Escape(edmType));
+
+        if (edmType is StructuralType)
+        {
+            return typeName;
+        }
+
+        if (edmType is SimpleType)
+        {
+            var clrType = UnderlyingClrType(edmType);
+            if (!IsEnumType(edmType))
+            {
+                typeName = _code.Escape(clrType);
+            }
+
+            typeName = FixNamespaces(typeName);
+
+            return clrType.IsValueType && isNullable == true ?
+                String.Format(CultureInfo.InvariantCulture, "Nullable<{0}>", typeName) :
+                typeName;
+        }
+
+        throw new ArgumentException("edmType");
+    }
+    
+    public Type UnderlyingClrType(EdmType edmType)
+    {
+        ArgumentNotNull(edmType, "edmType");
+
+        var primitiveType = edmType as PrimitiveType;
+        if (primitiveType != null)
+        {
+            return primitiveType.ClrEquivalentType;
+        }
+
+        if (IsEnumType(edmType))
+        {
+            return GetEnumUnderlyingType(edmType).ClrEquivalentType;
+        }
+
+        return typeof(object);
+    }
+    
+    public object GetEnumMemberValue(MetadataItem enumMember)
+    {
+        ArgumentNotNull(enumMember, "enumMember");
+        
+        var valueProperty = enumMember.GetType().GetProperty("Value");
+        return valueProperty == null ? null : valueProperty.GetValue(enumMember, null);
+    }
+    
+    public string GetEnumMemberName(MetadataItem enumMember)
+    {
+        ArgumentNotNull(enumMember, "enumMember");
+        
+        var nameProperty = enumMember.GetType().GetProperty("Name");
+        return nameProperty == null ? null : (string)nameProperty.GetValue(enumMember, null);
+    }
+
+    public System.Collections.IEnumerable GetEnumMembers(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+
+        var membersProperty = enumType.GetType().GetProperty("Members");
+        return membersProperty != null 
+            ? (System.Collections.IEnumerable)membersProperty.GetValue(enumType, null)
+            : Enumerable.Empty<MetadataItem>();
+    }
+    
+    public bool EnumIsFlags(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+        
+        var isFlagsProperty = enumType.GetType().GetProperty("IsFlags");
+        return isFlagsProperty != null && (bool)isFlagsProperty.GetValue(enumType, null);
+    }
+
+    public bool IsEnumType(GlobalItem edmType)
+    {
+        ArgumentNotNull(edmType, "edmType");
+
+        return edmType.GetType().Name == "EnumType";
+    }
+
+    public PrimitiveType GetEnumUnderlyingType(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+
+        return (PrimitiveType)enumType.GetType().GetProperty("UnderlyingType").GetValue(enumType, null);
+    }
+
+    public string CreateLiteral(object value)
+    {
+        if (value == null || value.GetType() != typeof(TimeSpan))
+        {
+            return _code.CreateLiteral(value);
+        }
+
+        return string.Format(CultureInfo.InvariantCulture, "new TimeSpan({0})", ((TimeSpan)value).Ticks);
+    }
+    
+    public bool VerifyCaseInsensitiveTypeUniqueness(IEnumerable<string> types, string sourceFile)
+    {
+        ArgumentNotNull(types, "types");
+        ArgumentNotNull(sourceFile, "sourceFile");
+        
+        var hash = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+        if (types.Any(item => !hash.Add(item)))
+        {
+            _errors.Add(
+                new CompilerError(sourceFile, -1, -1, "6023",
+                    String.Format(CultureInfo.CurrentCulture, CodeGenerationTools.GetResourceString("Template_CaseInsensitiveTypeConflict"))));
+            return false;
+        }
+        return true;
+    }
+    
+    public IEnumerable<SimpleType> GetEnumItemsToGenerate(IEnumerable<GlobalItem> itemCollection)
+    {
+        return GetItemsToGenerate<SimpleType>(itemCollection)
+            .Where(e => IsEnumType(e));
+    }
+    
+    public IEnumerable<T> GetItemsToGenerate<T>(IEnumerable<GlobalItem> itemCollection) where T: EdmType
+    {
+        return itemCollection
+            .OfType<T>()
+            .Where(i => !i.MetadataProperties.Any(p => p.Name == ExternalTypeNameAttributeName))
+            .OrderBy(i => i.Name);
+    }
+
+    public IEnumerable<string> GetAllGlobalItems(IEnumerable<GlobalItem> itemCollection)
+    {
+        return itemCollection
+            .Where(i => i is EntityType || i is ComplexType || i is EntityContainer || IsEnumType(i))
+            .Select(g => GetGlobalItemName(g));
+    }
+
+    public string GetGlobalItemName(GlobalItem item)
+    {
+        if (item is EdmType)
+        {
+            return ((EdmType)item).Name;
+        }
+        else
+        {
+            return ((EntityContainer)item).Name;
+        }
+    }
+
+    public IEnumerable<EdmProperty> GetSimpleProperties(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetSimpleProperties(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetComplexProperties(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is ComplexType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetComplexProperties(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is ComplexType && p.DeclaringType == type);
+    }
+
+    public IEnumerable<EdmProperty> GetPropertiesWithDefaultValues(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type && p.DefaultValue != null);
+    }
+    
+    public IEnumerable<EdmProperty> GetPropertiesWithDefaultValues(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type && p.DefaultValue != null);
+    }
+
+    public IEnumerable<NavigationProperty> GetNavigationProperties(EntityType type)
+    {
+        return type.NavigationProperties.Where(np => np.DeclaringType == type);
+    }
+    
+    public IEnumerable<NavigationProperty> GetCollectionNavigationProperties(EntityType type)
+    {
+        return type.NavigationProperties.Where(np => np.DeclaringType == type && np.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many);
+    }
+    
+    public FunctionParameter GetReturnParameter(EdmFunction edmFunction)
+    {
+        ArgumentNotNull(edmFunction, "edmFunction");
+
+        var returnParamsProperty = edmFunction.GetType().GetProperty("ReturnParameters");
+        return returnParamsProperty == null
+            ? edmFunction.ReturnParameter
+            : ((IEnumerable<FunctionParameter>)returnParamsProperty.GetValue(edmFunction, null)).FirstOrDefault();
+    }
+
+    public bool IsComposable(EdmFunction edmFunction)
+    {
+        ArgumentNotNull(edmFunction, "edmFunction");
+
+        var isComposableProperty = edmFunction.GetType().GetProperty("IsComposableAttribute");
+        return isComposableProperty != null && (bool)isComposableProperty.GetValue(edmFunction, null);
+    }
+
+    public IEnumerable<FunctionImportParameter> GetParameters(EdmFunction edmFunction)
+    {
+        return FunctionImportParameter.Create(edmFunction.Parameters, _code, _ef);
+    }
+
+    public TypeUsage GetReturnType(EdmFunction edmFunction)
+    {
+        var returnParam = GetReturnParameter(edmFunction);
+        return returnParam == null ? null : _ef.GetElementType(returnParam.TypeUsage);
+    }
+    
+    public bool GenerateMergeOptionFunction(EdmFunction edmFunction, bool includeMergeOption)
+    {
+        var returnType = GetReturnType(edmFunction);
+        return !includeMergeOption && returnType != null && returnType.EdmType.BuiltInTypeKind == BuiltInTypeKind.EntityType;
+    }
+}
+#>
