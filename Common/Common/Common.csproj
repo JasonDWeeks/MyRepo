@@ -108,5 +108,9 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="QuickMapper\QuickMapper.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="T4Scripts\DTOGenerator.txt" />
+    <Content Include="T4Scripts\T4StdLib.txt" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
